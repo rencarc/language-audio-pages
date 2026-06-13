@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>今日瑞典语测试</title>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f7f4ed; color: #1d2528; }
+    main { max-width: 760px; margin: 0 auto; padding: 24px 18px 44px; }
+    h1 { font-size: 30px; line-height: 1.15; margin: 8px 0 10px; }
+    h2 { font-size: 18px; margin: 28px 0 10px; color: #0c6478; }
+    p, li { font-size: 17px; line-height: 1.65; }
+    .panel { border: 1px solid #d6cfc2; background: #fffdf8; border-radius: 8px; padding: 18px; margin: 18px 0; }
+    button { width: 100%; min-height: 54px; border: 0; border-radius: 8px; background: #0c6478; color: white; font-size: 18px; font-weight: 700; }
+    button.secondary { margin-top: 10px; background: #415157; }
+    .sv { font-weight: 700; color: #18383f; }
+    .small { color: #5d6568; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>今日瑞典语测试</h1>
+    <p class="small">2026-06-13 · 微信内打开后，点播放按钮即可跟读。</p>
+    <div class="panel">
+      <button id="play">播放瑞典语跟读音频</button>
+      <button id="stop" class="secondary">停止</button>
+      <p class="small" id="status">如果第一次没有声音，请再点一次播放，或确认手机没有静音。</p>
+    </div>
+    <h2>今日主题：在咖啡馆点单</h2>
+    <p><span class="sv">Kan jag få en kaffe?</span><br>我可以要一杯咖啡吗？</p>
+    <h2>词汇</h2>
+    <ul>
+      <li><span class="sv">kaffe</span> - 咖啡</li>
+      <li><span class="sv">te</span> - 茶</li>
+      <li><span class="sv">mjölk</span> - 牛奶</li>
+      <li><span class="sv">socker</span> - 糖</li>
+      <li><span class="sv">kvitto</span> - 收据</li>
+    </ul>
+    <h2>实用句子</h2>
+    <p><span class="sv">Jag vill ha en kaffe, tack.</span><br>我想要一杯咖啡，谢谢。</p>
+    <p><span class="sv">Har ni havremjölk?</span><br>你们有燕麦奶吗？</p>
+    <p><span class="sv">Kan jag få kvittot?</span><br>我可以拿收据吗？</p>
+    <h2>小练习</h2>
+    <p>把“我想要一杯茶，谢谢。”翻译成瑞典语。</p>
+    <p><strong>答案：</strong><span class="sv">Jag vill ha ett te, tack.</span></p>
+  </main>
+  <script>
+    const spokenText = [
+      "Kan jag få en kaffe?",
+      "kaffe. te. mjölk. socker. kvitto.",
+      "Jag vill ha en kaffe, tack.",
+      "Har ni havremjölk?",
+      "Kan jag få kvittot?",
+      "Jag vill ha ett te, tack."
+    ].join(" ");
+    function speak() {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(spokenText);
+      utterance.lang = "sv-SE";
+      utterance.rate = 0.82;
+      utterance.pitch = 1;
+      utterance.onstart = () => document.getElementById("status").textContent = "正在播放。";
+      utterance.onend = () => document.getElementById("status").textContent = "播放完成，可以再次点击跟读。";
+      utterance.onerror = () => document.getElementById("status").textContent = "当前微信浏览器可能不支持内置朗读，我们后续可升级为 mp3 播放。";
+      window.speechSynthesis.speak(utterance);
+    }
+    document.getElementById("play").addEventListener("click", speak);
+    document.getElementById("stop").addEventListener("click", () => {
+      window.speechSynthesis.cancel();
+      document.getElementById("status").textContent = "已停止。";
+    });
+  </script>
+</body>
+</html>
