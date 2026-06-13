@@ -520,6 +520,7 @@
 
   <script>
     let stopped = false;
+    let playSession = 0;
     const pauseMs = 850;
 
     function statusFor(key, text) {
@@ -532,14 +533,20 @@
       return voices.find(v => v.lang === "sv-SE") || voices.find(v => v.lang && v.lang.startsWith("sv")) || null;
     }
 
-    function speakOne(text, key, index, total, voice) {
+    function speakOne(text, key, index, total, voice, session) {
       return new Promise(resolve => {
+        if (session !== playSession || stopped) {
+          resolve();
+          return;
+        }
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.lang = "sv-SE";
         utterance.rate = 1.0;
         utterance.pitch = 1.0;
         if (voice) utterance.voice = voice;
-        utterance.onstart = () => statusFor(key, `正在播放 ${index} / ${total}`);
+        utterance.onstart = () => {
+          if (session === playSession) statusFor(key, `正在播放 ${index} / ${total}`);
+        };
         utterance.onend = () => setTimeout(resolve, pauseMs);
         utterance.onerror = () => setTimeout(resolve, pauseMs);
         window.speechSynthesis.speak(utterance);
@@ -547,16 +554,20 @@
     }
 
     async function play(key) {
+      playSession += 1;
+      const session = playSession;
       stopped = false;
       window.speechSynthesis.cancel();
       const voice = pickVoice();
       const group = document.querySelector(`[data-audio-group="${key}"]`);
       const lines = group ? Array.from(group.querySelectorAll(".speak-text")).map(el => el.dataset.speech).filter(Boolean) : [];
       for (let i = 0; i < lines.length; i++) {
-        if (stopped) break;
-        await speakOne(lines[i], key, i + 1, lines.length, voice);
+        if (stopped || session !== playSession) break;
+        await speakOne(lines[i], key, i + 1, lines.length, voice, session);
       }
-      statusFor(key, stopped ? "已停止。" : "播放完成，可以再次点击跟读。");
+      if (session === playSession) {
+        statusFor(key, stopped ? "已停止。" : "播放完成，可以再次点击跟读。");
+      }
     }
 
     document.querySelectorAll("button[data-speech]").forEach(button => {
@@ -564,6 +575,7 @@
     });
     document.querySelectorAll("button.stop").forEach(button => {
       button.addEventListener("click", () => {
+        playSession += 1;
         stopped = true;
         window.speechSynthesis.cancel();
       });
