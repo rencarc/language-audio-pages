@@ -1,0 +1,69 @@
+name: Daily Language Push
+
+on:
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: "Which push to run"
+        required: true
+        default: "both"
+        type: choice
+        options:
+          - both
+          - swedish
+          - english
+  schedule:
+    - cron: "0 2 * * *"
+    - cron: "0 3 * * *"
+    - cron: "10 2 * * *"
+    - cron: "10 3 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-language-push
+  cancel-in-progress: false
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Decide push kind
+        id: decide
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "kind=${{ inputs.kind }}" >> "$GITHUB_OUTPUT"
+            echo "force=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "${{ github.event.schedule }}" in
+            "0 2 * * *"|"0 3 * * *") echo "kind=swedish" >> "$GITHUB_OUTPUT" ;;
+            "10 2 * * *"|"10 3 * * *") echo "kind=english" >> "$GITHUB_OUTPUT" ;;
+            *) echo "kind=none" >> "$GITHUB_OUTPUT" ;;
+          esac
+          echo "force=false" >> "$GITHUB_OUTPUT"
+      - name: Generate and push
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          PUSH_KIND: ${{ steps.decide.outputs.kind }}
+          FORCE_RUN: ${{ steps.decide.outputs.force }}
+        run: python scripts/daily_language_push.py
+      - name: Commit generated pages
+        run: |
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git config user.name "daily-language-bot"
+            git config user.email "actions@github.com"
+            git add index.html lessons/ data/ || true
+            git commit -m "Update daily language push"
+            git push
+          else
+            echo "No page changes to commit."
+          fi
