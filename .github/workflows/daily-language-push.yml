@@ -50,8 +50,8 @@ jobs:
           echo "force=false" >> "$GITHUB_OUTPUT"
       - name: Generate and push
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           PUSH_KIND: ${{ steps.decide.outputs.kind }}
           FORCE_RUN: ${{ steps.decide.outputs.force }}
