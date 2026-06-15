@@ -13,10 +13,10 @@ on:
           - swedish
           - english
   schedule:
+    # Sweden is currently on summer time (CEST, UTC+2).
+    # 02:00 UTC = 04:00 Stockholm, 02:10 UTC = 04:10 Stockholm.
     - cron: "0 2 * * *"
-    - cron: "0 3 * * *"
     - cron: "10 2 * * *"
-    - cron: "10 3 * * *"
 
 permissions:
   contents: write
@@ -43,11 +43,12 @@ jobs:
             exit 0
           fi
           case "${{ github.event.schedule }}" in
-            "0 2 * * *"|"0 3 * * *") echo "kind=swedish" >> "$GITHUB_OUTPUT" ;;
-            "10 2 * * *"|"10 3 * * *") echo "kind=english" >> "$GITHUB_OUTPUT" ;;
+            "0 2 * * *") echo "kind=swedish" >> "$GITHUB_OUTPUT" ;;
+            "10 2 * * *") echo "kind=english" >> "$GITHUB_OUTPUT" ;;
             *) echo "kind=none" >> "$GITHUB_OUTPUT" ;;
           esac
-          echo "force=false" >> "$GITHUB_OUTPUT"
+          # Scheduled GitHub jobs can start late. Force execution once triggered.
+          echo "force=true" >> "$GITHUB_OUTPUT"
       - name: Generate and push
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
