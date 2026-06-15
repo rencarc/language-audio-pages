@@ -30,9 +30,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Decide push kind
         id: decide
         shell: bash
@@ -42,56 +44,15 @@ jobs:
             echo "force=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
           case "${{ github.event.schedule }}" in
             "0 2 * * *") echo "kind=swedish" >> "$GITHUB_OUTPUT" ;;
             "10 2 * * *") echo "kind=english" >> "$GITHUB_OUTPUT" ;;
             *) echo "kind=none" >> "$GITHUB_OUTPUT" ;;
           esac
+
           echo "force=true" >> "$GITHUB_OUTPUT"
-      - name: Patch Swedish push format
-        if: steps.decide.outputs.kind == 'swedish' || steps.decide.outputs.kind == 'both'
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('scripts/daily_language_push.py')
-          s = p.read_text(encoding='utf-8')
-          s = s.replace('<section data-audio-group="terms1">', '<section id="terms1" data-audio-group="terms1">')
-          s = s.replace('<section data-audio-group="terms2">', '<section id="terms2" data-audio-group="terms2">')
-          s = s.replace('<section data-audio-group="opinions">', '<section id="opinions" data-audio-group="opinions">')
-          s = s.replace('<section data-audio-group="listening">', '<section id="listening" data-audio-group="listening">')
-          if 'def swedish_push_markdown(data, audio_url):' not in s:
-              insert = r'''
-          def swedish_push_markdown(data, audio_url):
-              lines = [
-                  "## 今日瑞典语 Grund 4", "",
-                  f"推送日期：{data['date']}",
-                  f"主题：{data['topic_sv']} / {data['topic_cn']}", "",
-                  "### 一、50 个单词/短语 + 口语句", "",
-                  "音频 1：词汇 1-25", f"{audio_url}#terms1",
-              ]
-              for i, item in enumerate(data['terms'][:25], 1):
-                  lines.extend(["", f"**{i}. {item['term']}**", f"中文：{item['cn']}", f"口语句：{item['spoken_sentence']}", f"中文对照：{item['cn_sentence']}"])
-              lines.extend(["", "音频 2：词汇 26-50", f"{audio_url}#terms2"])
-              for i, item in enumerate(data['terms'][25:], 26):
-                  lines.extend(["", f"**{i}. {item['term']}**", f"中文：{item['cn']}", f"口语句：{item['spoken_sentence']}", f"中文对照：{item['cn_sentence']}"])
-              lines.extend(["", "### 二、今日观点表达", "", "音频 3：观点表达", f"{audio_url}#opinions"])
-              for i, item in enumerate(data['opinions'], 1):
-                  lines.extend(["", f"**{i}. {item['sv']}**", f"中文对照：{item['cn']}"])
-              lines.extend(["", "### 三、独立听力短文", "", "音频 4：听力短文", f"{audio_url}#listening"])
-              for i, item in enumerate(data['listening'], 1):
-                  lines.extend(["", f"**{i}. {item['sv']}**", f"中文对照：{item['cn']}"])
-              lines.extend(["", "---", "如果微信内暂时无法打开音频入口，不影响上面的正文学习。"])
-              return "\n".join(lines)
-          '''
-              s = s.replace('\ndef push_swedish(now):', '\n' + insert + '\ndef push_swedish(now):')
-          s = re.sub(
-              r'send_push\(f"今日瑞典语 Grund 4：\{data\[\'topic_sv\'\]\}",\s*f"## 今日瑞典语 Grund 4.*?\)\n',
-              'send_push(f"今日瑞典语 Grund 4：{data[\'topic_sv\']}", swedish_push_markdown(data, url))\n',
-              s,
-              flags=re.S,
-          )
-          p.write_text(s, encoding='utf-8')
-          PY
+
       - name: Generate and push
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -100,6 +61,7 @@ jobs:
           PUSH_KIND: ${{ steps.decide.outputs.kind }}
           FORCE_RUN: ${{ steps.decide.outputs.force }}
         run: python scripts/daily_language_push.py
+
       - name: Commit generated pages
         run: |
           if [[ -n "$(git status --porcelain)" ]]; then
