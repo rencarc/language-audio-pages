@@ -3,6 +3,8 @@ import html
 import json
 import os
 import re
+import shutil
+import subprocess
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -17,6 +19,7 @@ LESSONS = ROOT / "lessons"
 DATA = ROOT / "data"
 LESSONS.mkdir(exist_ok=True)
 DATA.mkdir(exist_ok=True)
+TOPIC_ANCHOR_DATE = dt.date(2026, 6, 21)
 
 SWEDISH_TOPICS = [
     "Stress och hälsa", "Rutiner och vanor", "Familj och relationer", "Boende och grannar",
@@ -73,13 +76,62 @@ def model_text(prompt):
 
 
 def send_push(title, content):
-    post_json("https://www.pushplus.plus/send", {
-        "token": require_env("PUSHPLUS_TOKEN"),
-        "title": title,
-        "content": content,
-        "template": "markdown",
-        "channel": "wechat",
-    })
+    node_code = r"""
+const https = require('https');
+
+const payload = JSON.stringify({
+  token: process.env.PUSHPLUS_TOKEN,
+  title: process.env.PUSHPLUS_TITLE,
+  content: process.env.PUSHPLUS_CONTENT,
+  template: 'markdown',
+  channel: 'wechat',
+});
+
+const req = https.request(
+  'https://www.pushplus.plus/send',
+  {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(payload),
+    },
+    rejectUnauthorized: false,
+  },
+  res => {
+    let data = '';
+    res.on('data', chunk => data += chunk);
+    res.on('end', () => {
+      console.log('status=' + res.statusCode);
+      console.log(data);
+      if (res.statusCode < 200 || res.statusCode >= 300) process.exitCode = 1;
+    });
+  }
+);
+
+req.on('error', err => {
+  console.error('error=' + err.message);
+  process.exitCode = 1;
+});
+
+req.write(payload);
+req.end();
+"""
+    node_exe = shutil.which("node") or r"C:\Users\79834\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
+    env = os.environ.copy()
+    env["PUSHPLUS_TITLE"] = title
+    env["PUSHPLUS_CONTENT"] = content
+    result = subprocess.run(
+        [node_exe, "-e", node_code],
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"PushPlus send failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+        )
 
 
 def extract_json(text):
@@ -91,6 +143,46 @@ def extract_json(text):
     if start == -1 or end == -1:
         raise ValueError("No JSON object found")
     return json.loads(text[start:end + 1])
+
+
+def validate_swedish_content(data, used, now):
+    if data.get("date") != day(now):
+        raise ValueError("date field does not match today")
+
+    expected_topic = SWEDISH_TOPICS[(now.toordinal() - TOPIC_ANCHOR_DATE.toordinal()) % len(SWEDISH_TOPICS)]
+    if data.get("topic_sv") != expected_topic:
+        raise ValueError("topic does not match today's 28-day cycle")
+
+    terms = data.get("terms", [])
+    opinions = data.get("opinions", [])
+    listening = data.get("listening", [])
+    if len(terms) != 50:
+        raise ValueError("must contain exactly 50 terms")
+    if len(opinions) != 10:
+        raise ValueError("must contain exactly 10 opinions")
+    if not (12 <= len(listening) <= 16):
+        raise ValueError("listening must contain 12-16 sentences")
+
+    used_set = set(used)
+    seen_terms = set()
+    for item in terms:
+        term = item.get("term", "").strip()
+        if not term:
+            raise ValueError("every term needs a phrase")
+        if term in seen_terms:
+            raise ValueError("terms repeat within the same day")
+        if term in used_set:
+            raise ValueError(f"term already used this month: {term}")
+        seen_terms.add(term)
+        if not item.get("cn") or not item.get("spoken_sentence") or not item.get("cn_sentence"):
+            raise ValueError("each term needs Chinese support and a spoken sentence")
+
+    for item in opinions:
+        if not item.get("sv") or not item.get("cn"):
+            raise ValueError("each opinion needs Swedish and Chinese")
+    for item in listening:
+        if not item.get("sv") or not item.get("cn"):
+            raise ValueError("each listening sentence needs Swedish and Chinese")
 
 
 def day(now):
@@ -108,13 +200,12 @@ def save_used_terms(used):
     (DATA / "used_swedish_terms.json").write_text(json.dumps(used, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def swedish_prompt(now):
-    topic = SWEDISH_TOPICS[(now.toordinal() - dt.date(2026, 6, 14).toordinal()) % len(SWEDISH_TOPICS)]
-    used = load_used_terms().get("terms", [])[-1200:]
-    return f"""
+def swedish_prompt(now, used, previous_error=None):
+    topic = SWEDISH_TOPICS[(now.toordinal() - TOPIC_ANCHOR_DATE.toordinal()) % len(SWEDISH_TOPICS)]
+    prompt = f"""
 Create today's Swedish learning content as strict JSON only.
 Date: {day(now)}
-Level: Svenska Grund 4 / light B1.
+Level: Svenska Grund 4 / lätt B1.
 Topic: {topic}
 Avoid these already-used target terms/phrases: {json.dumps(used, ensure_ascii=False)}
 
@@ -129,12 +220,17 @@ Schema:
 }}
 
 Rules:
-- exactly 50 terms/phrases, no repeats or obvious variants from used list.
-- each term has one natural spoken Swedish sentence and Chinese meaning.
-- exactly 10 opinion sentences.
-- listening has 12-16 independent sentences and does not repeat previous content.
-- Chinese support is full sentence-by-sentence.
+- Exactly 50 terms/phrases.
+- Exactly 10 opinion sentences.
+- Listening has 12-16 independent sentences.
+- Do not repeat any used term or obvious variant.
+- Each term must have one natural spoken Swedish sentence and one Chinese translation sentence.
+- Each opinion and listening item must be a standalone Swedish sentence with Chinese support.
+- The output must be valid JSON only.
 """
+    if previous_error:
+        prompt += f"\nPrevious validation error: {previous_error}\nPlease correct it.\n"
+    return prompt
 
 
 def esc(value):
@@ -145,7 +241,7 @@ def audio_button(key, label):
     return f"""<div class="audio">
   <button data-speech="{key}">{esc(label)}</button>
   <button class="stop">停止</button>
-  <p class="status" id="status-{key}">1 倍速，分句朗读，句间停顿。</p>
+  <p class="status" id="status-{key}">1 倍速，分句朗读，句间停顿约 850 毫秒。</p>
 </div>"""
 
 
@@ -190,12 +286,15 @@ def swedish_html(data):
     h3 {{ font-size: 17px; margin: 0 0 8px; color: #17373b; }}
     p {{ font-size: 16px; line-height: 1.6; margin: 6px 0; }}
     .meta {{ color: #526164; font-size: 14px; }}
+    .page-note {{ background: linear-gradient(135deg, #f1eadc, #fffdf8); border: 1px solid #e2d8c8; border-radius: 14px; padding: 14px 16px; margin: 18px 0 8px; }}
     .audio {{ border: 1px solid #d6cec1; background: #fffdf8; border-radius: 8px; padding: 14px; margin: 16px 0; }}
     .audio button {{ width: 100%; min-height: 52px; border: 0; border-radius: 8px; background: #0b6470; color: white; font-size: 17px; font-weight: 700; }}
     .audio button.stop {{ margin-top: 9px; background: #49585b; }}
     .item {{ border-top: 1px solid #ded7cb; padding: 13px 0; }}
+    .item:first-child {{ border-top: 0; }}
     .sv {{ font-weight: 700; }}
     .status {{ color: #5d6668; font-size: 14px; }}
+    code {{ background: #f0ece4; border-radius: 5px; padding: 0 4px; }}
   </style>
 </head>
 <body>
@@ -203,11 +302,19 @@ def swedish_html(data):
     <h1>今日瑞典语 Grund 4</h1>
     <p class="meta">推送日期：{esc(data['date'])}</p>
     <p class="meta">今日主题：{esc(data['topic_sv'])} / {esc(data['topic_cn'])}</p>
-    <h2>一、50 个单词/短语 + 口语句</h2>
+    <p class="meta">水平：Svenska Grund 4 / lätt B1</p>
+    <div class="page-note">
+      <p class="meta">音频采用逐句朗读，句间停顿约 850 毫秒；每个播放按钮只读取本 section 内的 <code>data-speech</code>。</p>
+      <p class="meta">第二部分音频只读取观点表达 section，不能读取词汇或例句 section。</p>
+    </div>
+
+    <h2>一、50 个单词 / 短语 + 口语句</h2>
     <section id="terms1" data-audio-group="terms1">{audio_button("terms1", "播放音频 1：词汇 1-25")}{term_rows(terms[:25], 1)}</section>
     <section id="terms2" data-audio-group="terms2">{audio_button("terms2", "播放音频 2：词汇 26-50")}{term_rows(terms[25:], 26)}</section>
-    <h2>二、今日观点表达：{esc(data['topic_sv'])}</h2>
+
+    <h2>二、围绕今日主题的观点表达</h2>
     <section id="opinions" data-audio-group="opinions">{audio_button("opinions", "播放音频 3：观点表达")}{sentence_rows(data['opinions'])}</section>
+
     <h2>三、独立听力短文</h2>
     <section id="listening" data-audio-group="listening">{audio_button("listening", "播放音频 4：听力短文")}{sentence_rows(data['listening'])}</section>
   </main>
@@ -215,23 +322,32 @@ def swedish_html(data):
     let stopped = false;
     let playSession = 0;
     const pauseMs = 850;
-    function statusFor(key, text) {{ const el = document.getElementById("status-" + key); if (el) el.textContent = text; }}
+
+    function statusFor(key, text) {{
+      const el = document.getElementById("status-" + key);
+      if (el) el.textContent = text;
+    }}
+
     function pickVoice() {{
       const voices = window.speechSynthesis.getVoices();
       return voices.find(v => v.lang === "sv-SE") || voices.find(v => v.lang && v.lang.startsWith("sv")) || null;
     }}
+
     function speakOne(text, key, index, total, voice, session) {{
       return new Promise(resolve => {{
         if (session !== playSession || stopped) {{ resolve(); return; }}
         const utterance = new SpeechSynthesisUtterance(text);
-        utterance.lang = "sv-SE"; utterance.rate = 1.0; utterance.pitch = 1.0;
+        utterance.lang = "sv-SE";
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
         if (voice) utterance.voice = voice;
-        utterance.onstart = () => {{ if (session === playSession) statusFor(key, `正在播放 ${{index}} / ${{total}}`); }};
+        utterance.onstart = () => {{ if (session === playSession) statusFor(key, `正在朗读 ${{index}} / ${{total}}`); }};
         utterance.onend = () => setTimeout(resolve, pauseMs);
         utterance.onerror = () => setTimeout(resolve, pauseMs);
         window.speechSynthesis.speak(utterance);
       }});
     }}
+
     async function play(key) {{
       playSession += 1;
       const session = playSession;
@@ -246,6 +362,7 @@ def swedish_html(data):
       }}
       if (session === playSession) statusFor(key, stopped ? "已停止。" : "播放完成，可以再次点击跟读。");
     }}
+
     document.querySelectorAll("button[data-speech]").forEach(button => button.addEventListener("click", () => play(button.dataset.speech)));
     document.querySelectorAll("button.stop").forEach(button => button.addEventListener("click", () => {{ playSession += 1; stopped = true; window.speechSynthesis.cancel(); }}));
     if (speechSynthesis.onvoiceschanged !== undefined) speechSynthesis.onvoiceschanged = () => pickVoice();
@@ -273,9 +390,9 @@ def swedish_push_markdown(data, audio_url):
         f"推送日期：{data['date']}",
         f"主题：{data['topic_sv']} / {data['topic_cn']}",
         "",
-        "### 一、50 个单词/短语 + 口语句",
+        "### 一、50 个单词 / 短语 + 口语句",
         "",
-        f"音频 1：词汇 1-25",
+        "音频 1：词汇 1-25",
         f"{audio_url}#terms1",
     ]
     for i, item in enumerate(data["terms"][:25], 1):
@@ -283,13 +400,13 @@ def swedish_push_markdown(data, audio_url):
             "",
             f"**{i}. {item['term']}**",
             f"中文：{item['cn']}",
-            f"口语句：{item['spoken_sentence']}",
+            f"瑞典语口语句：{item['spoken_sentence']}",
             f"中文对照：{item['cn_sentence']}",
         ])
 
     lines.extend([
         "",
-        f"音频 2：词汇 26-50",
+        "音频 2：词汇 26-50",
         f"{audio_url}#terms2",
     ])
     for i, item in enumerate(data["terms"][25:], 26):
@@ -297,11 +414,11 @@ def swedish_push_markdown(data, audio_url):
             "",
             f"**{i}. {item['term']}**",
             f"中文：{item['cn']}",
-            f"口语句：{item['spoken_sentence']}",
+            f"瑞典语口语句：{item['spoken_sentence']}",
             f"中文对照：{item['cn_sentence']}",
         ])
 
-    lines.extend(["", "### 二、今日观点表达"])
+    lines.extend(["", "### 二、围绕今日主题的观点表达"])
     lines.extend([
         "",
         "音频 3：观点表达",
@@ -336,12 +453,22 @@ def swedish_push_markdown(data, audio_url):
 
 
 def push_swedish(now):
-    data = extract_json(model_text(swedish_prompt(now)))
-    if len(data.get("terms", [])) != 50:
-        raise ValueError("Swedish content must contain exactly 50 terms")
+    used = load_used_terms().get("terms", [])[-1200:]
+    previous_error = None
+    data = None
+    for _ in range(3):
+        data = extract_json(model_text(swedish_prompt(now, used, previous_error)))
+        try:
+            validate_swedish_content(data, used, now)
+            break
+        except ValueError as exc:
+            previous_error = str(exc)
+            data = None
+    if data is None:
+        raise ValueError(previous_error or "Swedish content validation failed")
+
     filename = f"{day(now)}-sv-grund4.html"
     (LESSONS / filename).write_text(swedish_html(data), encoding="utf-8")
-    used = load_used_terms()
     used["terms"] = list(dict.fromkeys(used.get("terms", []) + [item["term"] for item in data["terms"]]))[-1600:]
     save_used_terms(used)
     url = f"{SITE_BASE}/lessons/{filename}"
@@ -361,10 +488,15 @@ def google_news(query):
 
 def english_prompt(now):
     news = []
-    for q in ["enterprise AI agents workflow automation", "Microsoft Copilot Studio Azure AI Search RAG", "AI automation job market enterprise AI security"]:
+    for q in [
+        "enterprise AI agents workflow automation",
+        "Microsoft Copilot Studio Azure AI Search RAG",
+        "AI automation job market enterprise AI security",
+        "Microsoft Copilot enterprise AI July 2026",
+    ]:
         news.extend(google_news(q))
     return f"""
-Create today's English-first AI interview briefing for Zhen Xu.
+Create today's Chinese-first AI interview briefing for Zhen Xu.
 Date: {day(now)}
 CV context:
 {CV_CONTEXT}
@@ -372,20 +504,21 @@ Recent news candidates:
 {json.dumps(news[:18], ensure_ascii=False)}
 
 Rules:
-- English 80%, Chinese 20%. No full Chinese translation.
+- Chinese 80%, English 20%. No full sentence-by-sentence translation.
 - No links. No fake grammar correction.
 - Put AI career news first.
-- Include at least 3 news items. If candidates are weak, discuss broader current trends without inventing specific company announcements.
+- Include at least 3 news items from today or the last 7 days. If candidates are weak, discuss broader current trends without inventing specific company announcements.
 - Then one combined Interview & CV Drill section.
+- Add one small AI Tech Teaching section after the drill so the user learns one concrete concept each day.
 
 Markdown structure:
 推送日期: ...
-Target direction: ...
+目标岗位方向: ...
 
 ## 1. Daily AI Career News
-For each of 3 items:
+For each of 3+ items:
 - English headline
-- English summary, 3-5 sentences
+- English summary, 3-5 sentences, describing what happened, the trend, and what enterprises care about
 - Interview talking point, one ready-to-say paragraph
 - 中文短提示: keywords/core meaning only
 
@@ -396,23 +529,25 @@ For each of 3 items:
 - Follow-up questions, 3 questions
 - Short answer bullets, 2-3 English sentences for each follow-up
 - 中文短提示: answer structure/keywords/cautions only
+
+## 3. AI Tech Teaching
+- Teach one concrete AI concept in simple Chinese
+- Give one short English explanation
+- Give one practical example related to Copilot Studio, RAG, Azure AI Search, Power Automate, SharePoint, Dataverse, API integration, or security
+- Keep it concise and actionable
 """
 
 
 def push_english(now):
-    send_push(f"English AI Interview Brief：{day(now)}", model_text(english_prompt(now)))
+    send_push(f"中文 AI 面试简报 - {day(now)}", model_text(english_prompt(now)))
 
 
 def should_run(kind, now, force):
     if force:
         return True
-    if now.hour != 4:
-        return False
-    if kind == "swedish":
-        return now.minute < 20
-    if kind == "english":
-        return 10 <= now.minute < 30
-    return False
+    # Run whenever the workflow is invoked for the configured kind.
+    # This avoids missing a daily push when the job starts later than planned.
+    return kind in ("both", "swedish", "english")
 
 
 def main():
