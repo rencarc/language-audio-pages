@@ -257,6 +257,11 @@ def esc(value):
     return html.escape(str(value), quote=True)
 
 
+def latest_lesson_file():
+    files = sorted(LESSONS.glob("*-sv-grund4.html"))
+    return files[-1] if files else None
+
+
 def audio_button(key, label):
     return f"""<div class="audio">
   <button data-speech="{key}">{esc(label)}</button>
@@ -392,13 +397,28 @@ def swedish_html(data):
 
 
 def update_index(now, swedish_url):
+    latest = latest_lesson_file()
+    latest_href = f"./lessons/{latest.name}" if latest else swedish_url
+    latest_label = latest.stem[:10] if latest else day(now)
     (ROOT / "index.html").write_text(f"""<!doctype html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Language Audio Pages</title></head>
 <body style="font-family: system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 28px 18px;">
   <h1>Language Audio Pages</h1>
   <p>Latest update: {day(now)}</p>
-  <p><a href="{swedish_url}">今日瑞典语 Grund 4</a></p>
+  <p><a href="{latest_href}">{latest_label} - 今日瑞典语 Grund 4</a></p>
+</body>
+</html>""", encoding="utf-8")
+    (ROOT / "404.html").write_text(f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="0;url={latest_href}">
+  <title>Redirecting</title>
+</head>
+<body>
+  <p>Redirecting to <a href="{latest_href}">{latest_href}</a></p>
 </body>
 </html>""", encoding="utf-8")
 
