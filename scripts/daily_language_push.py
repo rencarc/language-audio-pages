@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -47,13 +48,32 @@ def require_env(name):
     return value
 
 
-def post_json(url, payload, headers=None):
+def post_json(url, payload, headers=None, retries=3):
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(url, data=body, headers=headers or {}, method="POST")
-    req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=90) as resp:
-        raw = resp.read().decode("utf-8")
-        return json.loads(raw) if raw else {}
+    last_error = None
+    for attempt in range(retries):
+        req = urllib.request.Request(url, data=body, headers=headers or {}, method="POST")
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                raw = resp.read().decode("utf-8")
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code not in {429, 500, 502, 503, 504} or attempt == retries - 1:
+                raise
+            wait = 5 * (attempt + 1)
+            print(f"HTTP {exc.code} from {url}; retrying in {wait}s ({attempt + 1}/{retries})")
+            time.sleep(wait)
+        except urllib.error.URLError as exc:
+            last_error = exc
+            if attempt == retries - 1:
+                raise
+            wait = 5 * (attempt + 1)
+            print(f"Network error calling {url}; retrying in {wait}s ({attempt + 1}/{retries}): {exc}")
+            time.sleep(wait)
+    if last_error:
+        raise last_error
 
 
 def model_text(prompt):
